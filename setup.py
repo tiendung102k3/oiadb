@@ -3,9 +3,8 @@ from setuptools import setup, find_packages
 setup(
     name="oiadb",
     version="0.6.1", # Added multiplatform support, auto ADB installation
-    packages=find_packages(where='oiadb_package'),
-    package_dir={'': 'oiadb_package'},
-    description="ADB Python wrapper library with enhanced functionality, image recognition and multiplatform support",
+    packages=find_packages(),
+description="ADB Python wrapper library with enhanced functionality, image recognition and multiplatform support",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Tien Dung",
