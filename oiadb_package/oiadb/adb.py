@@ -6,7 +6,6 @@ import os
 import logging
 import subprocess
 import time
-import pkg_resources # To find bundled APK
 from typing import Optional, List, Dict, Any, Union
 
 from .exceptions import (
@@ -21,11 +20,6 @@ from .utils.platform_utils import get_platform_info, ADBInstaller, PlatformInfo
 logger = logging.getLogger("oiadb")
 
 # Constants for the server
-SERVER_PACKAGE_NAME = "com.github.tiendung102k3.oiadb.server"
-SERVER_TEST_PACKAGE_NAME = SERVER_PACKAGE_NAME + ".test"
-SERVER_APK_FILENAME = "oiadb-server.apk"
-SERVER_CLASS_NAME = SERVER_PACKAGE_NAME + ".InstrumentedTest"
-SERVER_PORT = 9008 # Default port used by uiautomator2 server
 
 class MyADB:
     """
@@ -36,12 +30,11 @@ class MyADB:
         cache_enabled (bool): Bật/tắt cache kết quả lệnh
         timeout (int): Thời gian chờ tối đa cho các lệnh (giây)
         adb_path (str): Đường dẫn đến executable ADB
-        auto_start_server (bool): Tự động cài đặt và khởi động server khi khởi tạo
         auto_install_adb (bool): Tự động tải xuống và cài đặt ADB nếu không tìm thấy
     """
     
     def __init__(self, device_id: Optional[str] = None, cache_enabled: bool = True, 
-                 timeout: int = 30, adb_path: Optional[str] = None, auto_start_server: bool = True,
+                 timeout: int = 30, adb_path: Optional[str] = None,
                  auto_install_adb: bool = True):
         """
         Khởi tạo đối tượng MyADB.
@@ -51,14 +44,12 @@ class MyADB:
             cache_enabled: Bật/tắt cache kết quả lệnh
             timeout: Thời gian chờ tối đa cho các lệnh (giây)
             adb_path: Đường dẫn tùy chỉnh đến executable ADB
-            auto_start_server: Tự động cài đặt và khởi động server khi khởi tạo
             auto_install_adb: Tự động tải xuống và cài đặt ADB nếu không tìm thấy
         """
         self.device_id = device_id
         self.timeout = timeout
         self.cache_enabled = cache_enabled
         self.auto_install_adb = auto_install_adb
-        self.local_server_port = None # Port forwarded on local machine
         
         # Lấy thông tin nền tảng
         self.platform_info = get_platform_info()
@@ -86,9 +77,6 @@ class MyADB:
             else:
                 raise DeviceNotFoundError("No devices found connected.")
 
-        # Handle server setup
-        if auto_start_server:
-            self.setup_server()
 
     def _resolve_adb_path(self, custom_path: Optional[str] = None) -> str:
         """
@@ -129,180 +117,6 @@ class MyADB:
         # Sử dụng 'adb' và hy vọng nó có trong PATH
         logger.warning("Could not find or install ADB, falling back to 'adb' command")
         return "adb"
-
-    def _get_server_apk_path(self) -> str:
-        """Locate the bundled server APK file."""
-        try:
-            # Use pkg_resources to find the file within the installed package
-            apk_path = pkg_resources.resource_filename("oiadb", f"server/{SERVER_APK_FILENAME}")
-            if not os.path.exists(apk_path):
-                 raise FileNotFoundError(f"Bundled APK not found at expected location: {apk_path}")
-            logger.debug(f"Found server APK at: {apk_path}")
-            return apk_path
-        except Exception as e:
-            raise ADBError(f"Could not locate bundled server APK: {e}")
-
-    def _get_app_version_code(self, package_name: str) -> Optional[int]:
-        """Get the version code of an installed package."""
-        try:
-            output = self.run(f"shell dumpsys package {package_name}")
-            for line in output.splitlines():
-                if "versionCode=" in line:
-                    # Example line: versionCode=10 targetSdk=32
-                    parts = line.split()
-                    for part in parts:
-                        if part.startswith("versionCode="):
-                            return int(part.split("=")[1])
-            return None # Package found but versionCode not parsed
-        except (ADBCommandError, PackageNotFoundError):
-            return None # Package not found
-
-    def _install_server(self) -> None:
-        """Install or update the oiadb-server APK on the device."""
-        apk_path = self._get_server_apk_path()
-        # Sử dụng đường dẫn tạm thời phù hợp với thiết bị
-        device_temp_dir = self.platform_info.get_device_temp_dir()
-        target_apk_path = f"{device_temp_dir}/{SERVER_APK_FILENAME}"
-        
-        # Get version code of bundled APK (requires parsing the APK, complex)
-        # For simplicity, we'll rely on checking installed versions first.
-        # A more robust solution would parse the bundled APK's manifest.
-        
-        installed_server_version = self._get_app_version_code(SERVER_PACKAGE_NAME)
-        installed_test_version = self._get_app_version_code(SERVER_TEST_PACKAGE_NAME)
-
-        # For now, let's always try to install/update if versions are missing or seem old.
-        # A simple check: if either package is missing, install.
-        # A better check would compare version codes if we could get the bundled APK's version.
-        if installed_server_version is None or installed_test_version is None:
-            logger.info("oiadb-server not fully installed. Installing...")
-            try:
-                # Push APK to device
-                self.push_file(apk_path, target_apk_path)
-                # Install APK
-                # Use -t to allow installing test packages, -r to replace, -g to grant permissions
-                install_output = self.run(f"shell pm install -t -r -g {target_apk_path}")
-                if "Success" not in install_output:
-                    raise InstallationError(SERVER_PACKAGE_NAME, f"Install command failed: {install_output}")
-                logger.info("oiadb-server installed successfully.")
-                # Clean up temporary file
-                self.run(f"shell rm {target_apk_path}")
-            except (FileOperationError, ADBCommandError, InstallationError) as e:
-                raise ADBError(f"Failed to install oiadb-server: {e}")
-        else:
-            logger.info("oiadb-server already installed.") # Add version check later
-
-    def _is_server_running(self) -> bool:
-        """Check if the instrumentation server process is running."""
-        try:
-            # Check running instrumentations
-            output = self.run("shell ps -A | grep com.github.tiendung102k3.oiadb.server")
-            # Check if the specific instrumentation runner is active
-            # A more reliable check might involve querying the server port
-            return SERVER_PACKAGE_NAME in output
-        except ADBCommandError:
-            return False # Error likely means it's not running
-
-    def _start_server(self) -> None:
-        """Start the oiadb-server instrumentation."""
-        if self._is_server_running():
-            logger.info("oiadb-server instrumentation is already running.")
-            return
-
-        logger.info("Starting oiadb-server instrumentation...")
-        try:
-            # Start the instrumentation in the background
-            # Use am instrument -w to wait for startup, but run in background (&)
-            # The actual server runs as part of the test runner
-            command = f"shell am instrument -w -r -e debug false -e class {SERVER_CLASS_NAME} {SERVER_TEST_PACKAGE_NAME}/androidx.test.runner.AndroidJUnitRunner"
-            
-            # Sử dụng platform_utils để tạo đối số phù hợp với nền tảng
-            process_args = self.platform_info.create_process_args(
-                [self.adb_path, "-s", self.device_id] + command.split()[1:],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            # Run async without waiting for full command completion here, as it blocks
-            # We just need to start it. We'll check port forwarding later.
-            process = subprocess.Popen(**process_args)
-            
-            # Wait a moment for the server to potentially start
-            time.sleep(5) 
-            # Check if process started okay (doesn't guarantee server is fully ready)
-            if process.poll() is not None and process.returncode != 0:
-                 stdout_bytes, stderr_bytes = process.communicate()
-                 stderr_output = stderr_bytes.decode(errors='ignore')
-                 raise ADBError(f"Failed to start server instrumentation. Error: {stderr_output}")
-            logger.info("Sent command to start oiadb-server.")
-            # Add a check here to confirm server is listening? Requires port forward first.
-        except Exception as e:
-            raise ADBError(f"Failed to start oiadb-server: {e}")
-
-    def _setup_port_forwarding(self) -> None:
-        """Setup ADB port forwarding for the server."""
-        # Find an available local port (simple approach, might have race conditions)
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            self.local_server_port = s.getsockname()[1]
-        
-        logger.info(f"Forwarding local port {self.local_server_port} to device port {SERVER_PORT}")
-        try:
-            # Remove existing forwards for the device port first
-            self.run(f"forward --remove tcp:{SERVER_PORT}", use_cache=False)
-        except ADBCommandError:
-            pass # Ignore error if no forward existed
-        try:
-            # Setup the new forward
-            self.run(f"forward tcp:{self.local_server_port} tcp:{SERVER_PORT}", use_cache=False)
-            # Verify forward (optional but good practice)
-            forward_list = self.run("forward --list", use_cache=False)
-            if f"{self.device_id} tcp:{self.local_server_port} tcp:{SERVER_PORT}" not in forward_list:
-                raise ADBError("Failed to verify port forwarding setup.")
-            logger.info("Port forwarding setup complete.")
-            # Now, try to connect to the server to confirm it's running
-            self._check_server_connection()
-        except ADBCommandError as e:
-            raise ADBError(f"Failed to setup port forwarding: {e}")
-
-    def _check_server_connection(self) -> None:
-        """Check if the server is responding on the forwarded port."""
-        if not self.local_server_port:
-            raise ADBError("Port forwarding not set up.")
-        
-        import requests
-        server_url = f"http://127.0.0.1:{self.local_server_port}/ping"
-        max_retries = 5
-        retry_delay = 2
-        for attempt in range(max_retries):
-            try:
-                logger.debug(f"Pinging server at {server_url} (attempt {attempt + 1}/{max_retries})")
-                response = requests.get(server_url, timeout=5)
-                response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-                if response.ok:
-                    logger.info("Successfully connected to oiadb-server.")
-                    return
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Server ping failed: {e}. Retrying in {retry_delay}s...")
-                time.sleep(retry_delay)
-            except Exception as e:
-                 logger.error(f"Unexpected error checking server connection: {e}")
-                 break # Don't retry on unexpected errors
-        
-        raise ADBError(f"Failed to connect to oiadb-server at {server_url} after {max_retries} attempts.")
-
-    def setup_server(self) -> None:
-        """Install, start, and setup port forwarding for the oiadb-server."""
-        try:
-            self._install_server()
-            self._start_server()
-            self._setup_port_forwarding()
-            # Connection check is done within _setup_port_forwarding
-        except ADBError as e:
-            logger.error(f"Server setup failed: {e}")
-            raise # Re-raise the exception
-
     # --- Existing methods below --- 
 
     def _check_adb_installed(self) -> None:
@@ -1010,7 +824,6 @@ class MyADB:
         if not self.local_server_port:
             raise ADBError("Server not connected. Call setup_server() first.")
         
-        import requests
         import json
         
         url = f"http://127.0.0.1:{self.local_server_port}/{method}"

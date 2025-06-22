@@ -2,8 +2,9 @@ from setuptools import setup, find_packages
 
 setup(
     name="oiadb",
-    version="0.6.0", # Added multiplatform support, auto ADB installation
-    packages=find_packages(),
+    version="0.6.1", # Added multiplatform support, auto ADB installation
+    packages=find_packages(where='oiadb_package'),
+    package_dir={'': 'oiadb_package'},
     description="ADB Python wrapper library with enhanced functionality, image recognition and multiplatform support",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -40,9 +41,7 @@ setup(
         ]
     },
     include_package_data=True,
-    package_data={
-        "oiadb": ["server/oiadb-server.apk"],
-    },
+    package_data={},
     project_urls={
         "Bug Reports": "https://github.com/tiendung102k3/oiadb/issues",
         "Source": "https://github.com/tiendung102k3/oiadb",
